@@ -1,13 +1,10 @@
 import os
 import random
 import requests
-from flask import Flask, request, jsonify
 import pickle
 import pandas as pd
 
-app = Flask(__name__)
-
-# Replace with your actual Google API key
+# Replace with your actual Google API key.
 GOOGLE_API_KEY = "AIzaSyBiq620-FjtVuJZaZ8emjsPbTNyMCS2-no"
 
 # Define a list of random error messages.
@@ -25,7 +22,8 @@ ERROR_MESSAGES = [
 ]
 
 def random_error_response(status_code=500):
-    return jsonify({'error': random.choice(ERROR_MESSAGES)}), status_code
+    # For the purpose of this script, just raise an exception with a random error.
+    raise Exception(random.choice(ERROR_MESSAGES))
 
 def get_county_from_coordinates_google(lat, lon, api_key):
     url = f"https://maps.googleapis.com/maps/api/geocode/json?latlng={lat},{lon}&key={api_key}"
@@ -67,7 +65,6 @@ population_file_path = os.path.join(os.getcwd(), 'population.csv')
 try:
     population_data = pd.read_csv(population_file_path)
 except Exception:
-    # If population file cannot be read, return a random error.
     raise Exception(random.choice(ERROR_MESSAGES))
 
 # Determine the correct population column name.
@@ -101,164 +98,61 @@ def predict_staff_required(county, disaster_type_id, severity_type_id, populatio
             try:
                 input_data[col] = label_encoders[col].transform(input_data[col])
             except ValueError:
+                # If the input value was not seen during training, assign a default value.
                 input_data[col] = 0  
     input_data['Population'] = scaler.transform(input_data[['Population']])
     prediction = model.predict(input_data)
     return int(prediction[0])
 
-@app.route('/predict', methods=['POST'])
-def predict():
-    """
-    API endpoint to predict the number of staff required.
-    Input can be provided as:
-      Option A (using coordinates):
-      {
-          "location": {"lat": <latitude>, "lng": <longitude>},
-          "disaster_type_id": <integer>,
-          "severity_type_id": <integer>
-      }
-      Option B (using individual latitude/longitude keys):
-      {
-          "lat": <latitude>,
-          "lon": <longitude>,
-          "disaster_type_id": <integer>,
-          "severity_type_id": <integer>
-      }
-    If location data is provided, the Google Geocoding API is used to determine the county.
-    """
-    data = request.get_json(force=True)
-    print(data)
-    disaster_type_id = data.get('disaster_type_id')
-    severity_type_id = data.get('severity_type_id')
+if __name__ == '__main__':
+    # Hardcoded inputs
+    disaster_type_id = 2
+    severity_type_id = 1
+    location = {"lat": 32.67945519197781, "lng": -97.23876982927324}
     
-    # No county is provided via the form; use location instead.
-    location = data.get('location')
-    if location:
-        lat = location.get('lat')
-        lon = location.get('lng')
-    else:
-        lat = data.get('lat')
-        lon = data.get('lon')
+    # Extract latitude and longitude from location.
+    lat = location.get('lat')
+    lon = location.get('lng')
     
-    if lat is None or lon is None:
-        return random_error_response(400)
-    
+    # Validate and convert lat and lon.
     try:
         lat = float(lat)
         lon = float(lon)
     except ValueError:
-        return random_error_response(400)
+        raise Exception("Invalid latitude or longitude value.")
     
     # Ensure longitude is negative if required.
     if lon > 0:
         lon = lon * -1
-    
+
+    # Get county information using Google Geocoding API.
     county_data = get_county_from_coordinates_google(lat, lon, GOOGLE_API_KEY)
-    # Check if get_county_from_coordinates_google returned an error response.
-    if isinstance(county_data, tuple):
-        return county_data
     county = county_data['county']
     if not county:
-        return random_error_response(404)
-    
-    if disaster_type_id is None or severity_type_id is None:
-        return random_error_response(400)
+        raise Exception("County not found for the given coordinates.")
     
     # Lookup population by county (case insensitive).
     population_row = population_data[population_data['county'].str.lower() == county.lower()]
     if population_row.empty:
-        return random_error_response(404)
+        raise Exception("Population data not found for county: " + county)
     
     try:
         population = float(population_row.iloc[0][pop_col])
     except Exception:
-        return random_error_response(500)
-    
+        raise Exception("Error retrieving population data.")
+
+    # Convert disaster and severity type IDs to integers.
     try:
         disaster_type_id = int(disaster_type_id)
         severity_type_id = int(severity_type_id)
     except ValueError:
-        return random_error_response(400)
-    
+        raise Exception("Invalid disaster or severity type ID.")
+
+    # Make the prediction.
     try:
         predicted_staff = predict_staff_required(county, disaster_type_id, severity_type_id, population)
-    except Exception:
-        return random_error_response(500)
-    
-    return jsonify({'predicted_staff_required': predicted_staff})
+    except Exception as e:
+        raise Exception("Prediction error: " + str(e))
 
-@app.route('/')
-def index():
-    html = '''
-    <!doctype html>
-    <html>
-    <head>
-      <title>Staff Prediction App</title>
-    </head>
-    <body>
-      <h1>Staff Prediction</h1>
-      <form id="predictForm">
-        <p>Enter latitude and longitude, or use a location object (JSON format):</p>
-        <label for="lat">Latitude:</label>
-        <input type="text" id="lat" name="lat"><br><br>
-        <label for="lon">Longitude:</label>
-        <input type="text" id="lon" name="lon"><br><br>
-        <p>Or use a location object (JSON format):</p>
-        <textarea id="location" name="location" rows="3" cols="30" placeholder='{"lat":33.1795, "lng":-96.4930}'></textarea><br><br>
-        <label for="disaster_type_id">Disaster Type ID:</label>
-        <input type="number" id="disaster_type_id" name="disaster_type_id" required><br><br>
-        <label for="severity_type_id">Severity Type ID:</label>
-        <input type="number" id="severity_type_id" name="severity_type_id" required><br><br>
-        <button type="submit">Predict</button>
-      </form>
-      <h2>Prediction Result:</h2>
-      <div id="result"></div>
-      <script>
-      document.getElementById('predictForm').addEventListener('submit', function(e){
-          e.preventDefault();
-          var lat = document.getElementById('lat').value;
-          var lon = document.getElementById('lon').value;
-          var locationText = document.getElementById('location').value;
-          var disaster_type_id = document.getElementById('disaster_type_id').value;
-          var severity_type_id = document.getElementById('severity_type_id').value;
-          var payload = {
-              disaster_type_id: disaster_type_id,
-              severity_type_id: severity_type_id
-          };
-          if(locationText) {
-              try {
-                  payload.location = JSON.parse(locationText);
-              } catch(e) {
-                  document.getElementById('result').innerHTML = 'Error: Invalid JSON for location. Please use double quotes for keys and string values.';
-                  return;
-              }
-          } else {
-              payload.lat = lat;
-              payload.lon = lon;
-          }
-          fetch('/predict', {
-              method: 'POST',
-              headers: {'Content-Type': 'application/json'},
-              body: JSON.stringify(payload)
-          })
-          .then(response => {
-              if (!response.ok) {
-                  return response.text().then(text => { throw new Error(text) });
-              }
-              return response.json();
-          })
-          .then(data => {
-              document.getElementById('result').innerHTML = JSON.stringify(data);
-          })
-          .catch(error => {
-              document.getElementById('result').innerHTML = 'Error: ' + error.message;
-          });
-      });
-      </script>
-    </body>
-    </html>
-    '''
-    return html
-
-if __name__ == '__main__':
-    app.run(debug=True)
+    # Output the result.
+    print("Predicted staff required:", predicted_staff)
