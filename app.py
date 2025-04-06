@@ -110,54 +110,56 @@ def predict_staff_required(county, disaster_type_id, severity_type_id, populatio
 def predict():
     """
     API endpoint to predict the number of staff required.
-    Input can be provided either as:
-      Option A:
-      {
-          "county": "Name of the county",
-          "disaster_type_id": <integer>,
-          "severity_type_id": <integer>
-      }
-      Option B (using coordinates):
+    Input can be provided as:
+      Option A (using coordinates):
       {
           "location": {"lat": <latitude>, "lng": <longitude>},
           "disaster_type_id": <integer>,
           "severity_type_id": <integer>
       }
-    If the location is provided, the Google Geocoding API is used to determine the county.
+      Option B (using individual latitude/longitude keys):
+      {
+          "lat": <latitude>,
+          "lon": <longitude>,
+          "disaster_type_id": <integer>,
+          "severity_type_id": <integer>
+      }
+    If location data is provided, the Google Geocoding API is used to determine the county.
     """
     data = request.get_json(force=True)
     print(data)
-    county = data.get('county')
     disaster_type_id = data.get('disaster_type_id')
     severity_type_id = data.get('severity_type_id')
     
-    # If county is not provided, check for a "location" object.
+    # No county is provided via the form; use location instead.
+    location = data.get('location')
+    if location:
+        lat = location.get('lat')
+        lon = location.get('lng')
+    else:
+        lat = data.get('lat')
+        lon = data.get('lon')
+    
+    if lat is None or lon is None:
+        return random_error_response(400)
+    
+    try:
+        lat = float(lat)
+        lon = float(lon)
+    except ValueError:
+        return random_error_response(400)
+    
+    # Ensure longitude is negative if required.
+    if lon > 0:
+        lon = lon * -1
+    
+    county_data = get_county_from_coordinates_google(lat, lon, GOOGLE_API_KEY)
+    # Check if get_county_from_coordinates_google returned an error response.
+    if isinstance(county_data, tuple):
+        return county_data
+    county = county_data['county']
     if not county:
-        location = data.get('location')
-        if location:
-            lat = location.get('lat')
-            lon = location.get('lng')
-        else:
-            lat = data.get('lat')
-            lon = data.get('lon')
-        
-        if lat is None or lon is None:
-            return random_error_response(400)
-        try:
-            lat = float(lat)
-            lon = float(lon)
-        except ValueError:
-            return random_error_response(400)
-        if lon > 0:
-            lon = lon * -1
-        county_data = get_county_from_coordinates_google(lat, lon, GOOGLE_API_KEY)
-        # Check if get_county_from_coordinates_google returned an error response.
-        if isinstance(county_data, tuple):
-            # county_data is a tuple if error was returned by random_error_response
-            return county_data
-        county = county_data['county']
-        if not county:
-            return random_error_response(404)
+        return random_error_response(404)
     
     if disaster_type_id is None or severity_type_id is None:
         return random_error_response(400)
@@ -196,9 +198,7 @@ def index():
     <body>
       <h1>Staff Prediction</h1>
       <form id="predictForm">
-        <p>Either enter the county or latitude/longitude (or a location object):</p>
-        <label for="county">County:</label>
-        <input type="text" id="county" name="county"><br><br>
+        <p>Enter latitude and longitude, or use a location object (JSON format):</p>
         <label for="lat">Latitude:</label>
         <input type="text" id="lat" name="lat"><br><br>
         <label for="lon">Longitude:</label>
@@ -216,7 +216,6 @@ def index():
       <script>
       document.getElementById('predictForm').addEventListener('submit', function(e){
           e.preventDefault();
-          var county = document.getElementById('county').value;
           var lat = document.getElementById('lat').value;
           var lon = document.getElementById('lon').value;
           var locationText = document.getElementById('location').value;
@@ -226,9 +225,7 @@ def index():
               disaster_type_id: disaster_type_id,
               severity_type_id: severity_type_id
           };
-          if(county) {
-              payload.county = county;
-          } else if(locationText) {
+          if(locationText) {
               try {
                   payload.location = JSON.parse(locationText);
               } catch(e) {
